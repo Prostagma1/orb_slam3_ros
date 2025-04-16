@@ -1,0 +1,43 @@
+<launch>
+    <param name="use_sim_time" value="false" />
+
+    <!-- Main node -->
+    <node name="orb_slam3" pkg="orb_slam3_ros" type="ros_mono_inertial" output="screen">
+        <remap from="/camera/image_raw"     to="/camera_0"/>
+        <remap from="/imu"                  to="/imu_0"/>
+
+        <param name="voc_file"      type="string" value="$(find orb_slam3_ros)/orb_slam3/Vocabulary/ORBvoc.txt.bin"/>
+        <param name="settings_file" type="string" value="$(find orb_slam3_ros)/config/Monocular-Inertial/test.yaml"/>
+
+        <param name="world_frame_id"    type="string"   value="world" />
+        <param name="cam_frame_id"      type="string"   value="camera_link" />
+        <param name="imu_frame_id"      type="string"   value="imu_link" />
+        <param name="enable_pangolin"   type="bool"     value="false" />
+
+
+        <param name="save_map_path" type="string" value="/home/prostagma/orb_maps"/> <!-- Папка для сохранения -->
+
+        <param name="save_map_filter/enable" type="bool" value="false"/>         <!-- Включить/выключить фильтрацию -->
+        <!-- <param name="save_map_filter/type" type="string" value="sor"/>  -->
+        <param name="save_map_filter/type" type="string" value="ror"/>
+
+        <!-- Настройки для фильтра Statistical Outlier Removal (SOR) -->
+        <param name="save_map_filter/sor/mean_k" type="int" value="30"/>
+        <param name="save_map_filter/sor/stddev_thresh" type="double" value="1.0"/>
+
+        <!-- Настройки для фильтра Radius Outlier Removal (ROR) -->
+        <param name="save_map_filter/ror/radius_search" type="double" value="0.5"/> 
+        <param name="save_map_filter/ror/min_neighbors" type="int" value="3"/>      
+    </node>
+    
+    <!-- Visualization orb_slam3_with_imu -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find orb_slam3_ros)/config/my.rviz" output="screen"   launch-prefix="my-prime-run"/>
+    
+    <!-- Trajectory path -->
+    <!-- <node pkg="hector_trajectory_server" type="hector_trajectory_server" name="trajectory_server_orb_slam3" output="screen" ns="orb_slam3_ros" >
+        <param name="/target_frame_name" value="/world" />
+        <param name="/source_frame_name" value="/imu_link" />
+        <param name="/trajectory_update_rate" value="20.0" />
+        <param name="/trajectory_publish_rate" value="20.0" />
+    </node> -->
+</launch>

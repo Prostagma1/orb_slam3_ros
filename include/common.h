@@ -62,4 +62,11 @@ bool save_traj_srv(orb_slam3_ros::SaveMap::Request&, orb_slam3_ros::SaveMap::Res
 
 cv::Mat SE3f_to_cvMat(Sophus::SE3f);
 tf::Transform SE3f_to_tfTransform(Sophus::SE3f);
-sensor_msgs::PointCloud2 mappoint_to_pointcloud(std::vector<ORB_SLAM3::MapPoint*>, ros::Time);
+
+sensor_msgs::PointCloud2 mappoint_to_pointcloud_world(std::vector<ORB_SLAM3::MapPoint*>, ros::Time);
+
+sensor_msgs::PointCloud2 mappoint_to_pointcloud(
+    std::vector<ORB_SLAM3::MapPoint*> map_points, 
+    ros::Time msg_time,
+    const Sophus::SE3f& Tcw,           
+    const std::string& camera_frame_id);

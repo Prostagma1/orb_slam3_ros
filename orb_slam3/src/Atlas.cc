@@ -18,11 +18,17 @@
 
 #include "Atlas.h"
 #include "Viewer.h"
-
+#include "Map.h" 
+#include <mutex>
+#include <vector>
+#include <set>
+#include <iostream>
+#include <algorithm> // Для std::copy, sort
 #include "GeometricCamera.h"
 #include "Pinhole.h"
 #include "KannalaBrandt8.h"
-
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 namespace ORB_SLAM3
 {
 
@@ -35,7 +41,26 @@ Atlas::Atlas(int initKFid): mnLastInitKFidMap(initKFid), mHasViewer(false)
     mpCurrentMap = static_cast<Map*>(NULL);
     CreateNewMap();
 }
+pcl::PointCloud<pcl::PointXYZ>::Ptr Atlas::GetCurrentMapPointsSafeAsPCL()
+{
+    Map* pCurrent = nullptr; // Указатель на текущую карту
 
+    // --- Блок для блокировки мьютекса Атласа ---
+    {
+        std::unique_lock<std::mutex> lock(mMutexAtlas); // Блокируем Атлас
+        pCurrent = mpCurrentMap; // Копируем указатель на текущую карту под замком
+    } // --- Мьютекс Атласа разблокируется здесь ---
+
+    // Проверяем, есть ли текущая карта
+    if (!pCurrent) {
+         std::cerr << "Atlas::GetCurrentMapPointsSafeAsPCL: No current map exists!" << std::endl;
+         // Возвращаем пустое, но валидное облако
+         return pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>);
+    }
+
+    // Вызываем безопасный метод карты. Он сам обработает свой мьютекс (mMutexMap).
+    return pCurrent->GetAllMapPointsSafeAsPCL();
+}
 Atlas::~Atlas()
 {
     for(std::set<Map*>::iterator it = mspMaps.begin(), end = mspMaps.end(); it != end;)

@@ -20,6 +20,8 @@
 #include "Map.h"
 
 #include<mutex>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 
 namespace ORB_SLAM3
 {
@@ -131,7 +133,39 @@ void Map::SetReferenceMapPoints(const vector<MapPoint *> &vpMPs)
     unique_lock<mutex> lock(mMutexMap);
     mvpReferenceMapPoints = vpMPs;
 }
+pcl::PointCloud<pcl::PointXYZ>::Ptr Map::GetAllMapPointsSafeAsPCL()
+{
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
+    // Блокируем мьютекс карты на время доступа к mspMapPoints и данным MapPoint
+    std::unique_lock<std::mutex> lock(mMutexMap);
+
+    cloud->reserve(mspMapPoints.size()); // Резервируем память
+    int valid_points_count = 0;
+
+    // Итерируем по точкам и копируем их координаты ПОД ЗАМКОМ mMutexMap
+    for (MapPoint* pMP : mspMapPoints) // Прямой доступ к сету под локом
+    {
+        if (pMP && !pMP->isBad()) // Безопасный доступ к состоянию точки
+        {
+            Eigen::Vector3f worldPos = pMP->GetWorldPos(); // Безопасный доступ к позиции
+
+            pcl::PointXYZ point;
+            point.x = worldPos.x();
+            point.y = worldPos.y();
+            point.z = worldPos.z();
+            cloud->push_back(point); // Добавляем точку в облако
+            valid_points_count++;
+        }
+    }
+
+    // Устанавливаем метаданные облака
+    cloud->width = cloud->points.size();
+    cloud->height = 1;
+    cloud->is_dense = true; // Предполагаем, что нет NaN/Inf, так как isBad() отсеивает
+
+    return cloud;
+}
 void Map::InformNewBigChange()
 {
     unique_lock<mutex> lock(mMutexMap);

@@ -12,20 +12,23 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall   -O3")
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -march=native")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native")
 
-# Check C++14 or C++0x support
+## Check C++14 or C++0x support
 include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-std=c++14" COMPILER_SUPPORTS_CXX14)
-CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
+CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X) # Оставим проверку C++0x на всякий случай
+
 if(COMPILER_SUPPORTS_CXX14)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
-  add_definitions(-DCOMPILEDWITHC11)
+  # Можно вернуть определение, если оно где-то используется
+  # add_definitions(-DCOMPILEDWITHC11) # Старое название, можно оставить или убрать
   message(STATUS "Using flag -std=c++14.")
-elseif(COMPILER_SUPPORTS_CXX0X)
+elseif(COMPILER_SUPPORTS_CXX0X) # Используем C++0x если C++14 нет
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
-  add_definitions(-DCOMPILEDWITHC0X)
+  # add_definitions(-DCOMPILEDWITHC0X)
   message(STATUS "Using flag -std=c++0x.")
 else()
-  message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++14 support. Please use a different C++ compiler.")
+  # Ошибка, если нет ни C++14, ни C++0x (маловероятно)
+  message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++14 or C++0x support. Please use a different C++ compiler.")
 endif()
 
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
@@ -54,10 +57,13 @@ find_package(catkin REQUIRED COMPONENTS
   tf
   tf2
   message_generation
+   pcl_ros       # <-- Добавить
+  pcl_conversions # <-- Добавить
 )
 
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
+find_package(PCL REQUIRED)
 
 add_service_files(
   FILES
@@ -87,6 +93,7 @@ include_directories(
   ${EIGEN3_INCLUDE_DIR}
   ${Pangolin_INCLUDE_DIRS}
   ${catkin_INCLUDE_DIRS}
+    ${PCL_INCLUDE_DIRS}     # <-- Добавить
 )
 
 include(${PROJECT_SOURCE_DIR}/orb_slam3/Thirdparty/DBoW2/CMakeLists.txt)
@@ -184,6 +191,7 @@ add_executable(ros_mono_inertial
 target_link_libraries(ros_mono_inertial 
   ${PROJECT_NAME}
   ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}     # <-- Добавить
 )
 
 ## ROS node

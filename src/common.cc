@@ -5,6 +5,18 @@
 */
 
 #include "common.h"
+#include <pcl_ros/point_cloud.h> // Для работы с PCL в ROS
+#include <pcl/point_types.h>
+#include <pcl/io/pcd_io.h>      // Для сохранения PCD
+#include <pcl_conversions/pcl_conversions.h> // Для конвертации
+#include <pcl/filters/statistical_outlier_removal.h> // Фильтр SOR
+#include <pcl/filters/radius_outlier_removal.h>     // <--- ДОБАВИТЬ Фильтр ROR
+#include "orb_slam3_ros/SaveMap.h" // Ваш сервис
+#include <ros/node_handle.h> // Для доступа к параметрам
+#include <string>            // Для работы со строками (путь, тип фильтра)
+// #include <filesystem>        // Для создания директории (требует C++17)
+#include <boost/filesystem.hpp> 
+#include <algorithm>         // Для std::transform (преобразование строки в нижний регистр)
 
 // Variables for ORB-SLAM3
 ORB_SLAM3::System* pSLAM;
@@ -20,15 +32,185 @@ image_transport::Publisher tracking_img_pub;
 //////////////////////////////////////////////////
 // Main functions
 //////////////////////////////////////////////////
-
 bool save_map_srv(orb_slam3_ros::SaveMap::Request &req, orb_slam3_ros::SaveMap::Response &res)
 {
-    res.success = pSLAM->SaveMap(req.name);
+    // --- 0. Инициализация и проверка ---
+    if (!pSLAM) {
+        ROS_ERROR("SaveMap Service: SLAM system is not initialized!");
+        res.success = false;
+        return false;
+    }
 
-    if (res.success)
-        ROS_INFO("Map was saved as %s.osa", req.name.c_str());
-    else
-        ROS_ERROR("Map could not be saved.");
+    if (req.name.empty()) {
+        ROS_ERROR("SaveMap Service: Map name cannot be empty!");
+        res.success = false;
+        return false;
+    }
+
+    ROS_INFO("SaveMap Service: Received request to save map components with base name '%s'", req.name.c_str());
+
+    // Получаем NodeHandle для доступа к параметрам (используем приватный)
+    ros::NodeHandle nh("~");
+
+    // --- Параметры из launch файла ---
+    std::string save_path = ".";
+    bool enable_filter = true;
+    std::string filter_type_str = "sor"; // Тип фильтра по умолчанию ("sor", "ror", "none")
+
+    // Параметры SOR
+    int sor_mean_k = 50;
+    double sor_stddev_mul_thresh = 1.0;
+
+    // Параметры ROR
+    double ror_radius_search = 0.1; // Радиус поиска по умолчанию
+    int ror_min_neighbors = 5;     // Мин. соседей в радиусе по умолчанию
+
+    nh.param<std::string>("save_map_path", save_path, ".");
+    nh.param<bool>("save_map_filter/enable", enable_filter, true);
+    nh.param<std::string>("save_map_filter/type", filter_type_str, "sor");
+
+    // Преобразуем тип фильтра в нижний регистр для сравнения без учета регистра
+    std::transform(filter_type_str.begin(), filter_type_str.end(), filter_type_str.begin(), ::tolower);
+
+    // Читаем параметры конкретного фильтра только если он выбран
+    if (enable_filter) {
+        if (filter_type_str == "sor") {
+            nh.param<int>("save_map_filter/sor/mean_k", sor_mean_k, 50);
+            nh.param<double>("save_map_filter/sor/stddev_thresh", sor_stddev_mul_thresh, 1.0);
+            ROS_INFO("Save map filter type: SOR (MeanK=%d, StddevThresh=%.2f)", sor_mean_k, sor_stddev_mul_thresh);
+        } else if (filter_type_str == "ror") {
+            nh.param<double>("save_map_filter/ror/radius_search", ror_radius_search, 0.1);
+            nh.param<int>("save_map_filter/ror/min_neighbors", ror_min_neighbors, 5);
+            ROS_INFO("Save map filter type: ROR (Radius=%.3f, MinNeighbors=%d)", ror_radius_search, ror_min_neighbors);
+        } else if (filter_type_str == "none") {
+             ROS_INFO("Save map filter type: None (filtering disabled by type parameter)");
+             enable_filter = false; // Отключаем фильтрацию если явно указано "none"
+        } else {
+            ROS_WARN("Unknown filter type '%s' specified. Disabling filtering.", filter_type_str.c_str());
+            enable_filter = false; // Отключаем фильтрацию при неизвестном типе
+        }
+    } else {
+        ROS_INFO("Save map filtering is disabled by enable parameter.");
+    }
+    ROS_INFO("Save map path: '%s'", save_path.c_str());
+
+
+    // Создаем директорию для сохранения
+    try {
+         if (!save_path.empty() && save_path != ".") {
+              boost::filesystem::create_directories(save_path); // Boost
+         }
+    } catch (const std::exception& e) {
+         ROS_ERROR("Failed to create save directory '%s': %s", save_path.c_str(), e.what());
+         save_path = ".";
+         ROS_WARN("Falling back to saving in the current directory.");
+    }
+
+
+    // --- 1. Получение "сырого" облака точек ---
+    ROS_INFO("Retrieving map points as PCL cloud...");
+    pcl::PointCloud<pcl::PointXYZ>::Ptr map_cloud_raw;
+    try {
+         map_cloud_raw = pSLAM->GetAllMapPointsAsPCL();
+    } catch (const std::exception& e) {
+        ROS_ERROR("Exception while calling GetAllMapPointsAsPCL: %s", e.what());
+        map_cloud_raw = nullptr;
+    }
+
+    if (!map_cloud_raw || map_cloud_raw->empty()) {
+        ROS_ERROR("Map point cloud is empty or could not be retrieved. Cannot save map.");
+        res.success = false;
+        return false;
+    }
+    ROS_INFO("Successfully retrieved %ld raw map points.", map_cloud_raw->size());
+
+
+    // --- 2. Сохранение "сырого" облака ---
+    std::string pcd_filename_raw = save_path + "/" + req.name + "_raw.pcd";
+    bool raw_saved = false;
+    ROS_INFO("Saving raw map point cloud to %s", pcd_filename_raw.c_str());
+    try {
+        if (pcl::io::savePCDFileBinary(pcd_filename_raw, *map_cloud_raw) == 0) {
+            ROS_INFO("Raw map point cloud successfully saved.", pcd_filename_raw.c_str());
+            raw_saved = true;
+        } else {
+            ROS_ERROR("Failed to save raw map point cloud.", pcd_filename_raw.c_str());
+        }
+    } catch (const std::exception& e) {
+        ROS_ERROR("Exception while saving raw PCD file %s: %s", pcd_filename_raw.c_str(), e.what());
+    } catch (...) {
+        ROS_ERROR("Unknown exception while saving raw PCD file %s", pcd_filename_raw.c_str());
+    }
+
+
+    // --- 3. Фильтрация и Сохранение отфильтрованного облака ---
+    pcl::PointCloud<pcl::PointXYZ>::Ptr map_cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
+    bool filtered_saved = false; // Флаг успеха сохранения отфильтрованного облака
+
+    if (enable_filter) {
+        ROS_INFO("Applying filter '%s'...", filter_type_str.c_str());
+        pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud(new pcl::PointCloud<pcl::PointXYZ>()); // Временное облако для результата фильтрации
+
+        try {
+            if (filter_type_str == "sor") {
+                pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
+                sor.setInputCloud(map_cloud_raw);
+                sor.setMeanK(sor_mean_k);
+                sor.setStddevMulThresh(sor_stddev_mul_thresh);
+                sor.filter(*temp_cloud);
+            } else if (filter_type_str == "ror") {
+                pcl::RadiusOutlierRemoval<pcl::PointXYZ> ror;
+                ror.setInputCloud(map_cloud_raw);
+                ror.setRadiusSearch(ror_radius_search);
+                ror.setMinNeighborsInRadius(ror_min_neighbors);
+                ror.filter(*temp_cloud);
+            }
+            // Если нужно будет добавить другие фильтры, использовать else if
+
+            map_cloud_filtered = temp_cloud; // Переносим результат во внешнюю переменную
+            ROS_INFO("Filtering complete. Points before: %ld, Points after: %ld",
+                     map_cloud_raw->size(), map_cloud_filtered->size());
+
+            if (map_cloud_filtered->empty()) {
+                 ROS_WARN("Filtered point cloud is empty! Check filter parameters. Skipping save of filtered cloud.");
+            } else {
+                 // Сохраняем отфильтрованное облако
+                 std::string pcd_filename_filtered = save_path + "/" + req.name + "_" + filter_type_str + "_filtered.pcd"; // Добавляем тип фильтра в имя файла
+                 ROS_INFO("Saving filtered map point cloud to %s", pcd_filename_filtered.c_str());
+                 try {
+                     if (pcl::io::savePCDFileBinary(pcd_filename_filtered, *map_cloud_filtered) == 0) {
+                         ROS_INFO("Filtered map point cloud successfully saved.");
+                         filtered_saved = true;
+                     } else {
+                         ROS_ERROR("Failed to save filtered map point cloud.");
+                     }
+                 } catch (const std::exception& e) {
+                     ROS_ERROR("Exception while saving filtered PCD file %s: %s", pcd_filename_filtered.c_str(), e.what());
+                 } catch (...) {
+                     ROS_ERROR("Unknown exception while saving filtered PCD file %s", pcd_filename_filtered.c_str());
+                 }
+            }
+
+        } catch (const std::exception& e) {
+             ROS_ERROR("Exception during filtering process: %s", e.what());
+        } catch (...) {
+             ROS_ERROR("Unknown exception during filtering process.");
+        }
+    } else {
+        ROS_INFO("Filtering is disabled. Only raw point cloud will be saved.");
+        // filtered_saved остается false, так как фильтрация не проводилась
+    }
+
+
+    // --- 4. Определение общего результата ---
+    // Успех, если сырое облако сохранилось И (фильтрация была выключена ИЛИ (она была включена И успешно завершилась сохранением))
+    res.success = raw_saved && (!enable_filter || (enable_filter && filtered_saved));
+
+    if (res.success) {
+         ROS_INFO("SaveMap service finished successfully.");
+    } else {
+         ROS_ERROR("SaveMap service finished with errors.");
+    }
 
     return res.success;
 }
@@ -199,35 +381,29 @@ void publish_keypoints(std::vector<ORB_SLAM3::MapPoint*> tracked_map_points, std
         }
     }
 
-
-    // Create a blank image. Adjust dimensions as per your requirement.
-    //int width = 640;  // Assuming a standard 640x480 size. Change as needed.
-    //int height = 480;
-    //cv::Mat blankImg = cv::Mat::zeros(height, width, CV_8UC3);  // Black image
-
-    // Draw keypoints on the blank image.
-    //cv::drawKeypoints(blankImg, finalKeypoints, blankImg, cv::Scalar(0, 255, 0), cv::DrawMatchesFlags::DEFAULT);
-
-    // Display the image (optional)
-    //cv::imshow("Keypoints", blankImg);
-    //cv::waitKey(1);  
-
     sensor_msgs::PointCloud2 cloud = keypoints_to_pointcloud(finalKeypoints, msg_time);
 
     tracked_keypoints_pub.publish(cloud);
 }
 
-
 void publish_tracked_points(std::vector<ORB_SLAM3::MapPoint*> tracked_points, ros::Time msg_time)
 {
-    sensor_msgs::PointCloud2 cloud = mappoint_to_pointcloud(tracked_points, msg_time);
+    // Получаем текущую позу камеры (World -> Camera)
+    Sophus::SE3f Twc = pSLAM->GetCamTwc(); 
+    // Проверяем на NaN перед инвертированием (хотя проверка есть в publish_topics)
+    if (Twc.translation().array().isNaN()[0] || Twc.rotationMatrix().array().isNaN()(0,0)) 
+        return;
+    Sophus::SE3f Tcw = Twc.inverse(); 
+
+    // Вызываем обновленную функцию
+    sensor_msgs::PointCloud2 cloud = mappoint_to_pointcloud(tracked_points, msg_time, Tcw, cam_frame_id); // <--- ИЗМЕНЕНО
     
     tracked_mappoints_pub.publish(cloud);
 }
 
 void publish_all_points(std::vector<ORB_SLAM3::MapPoint*> map_points, ros::Time msg_time)
 {
-    sensor_msgs::PointCloud2 cloud = mappoint_to_pointcloud(map_points, msg_time);
+    sensor_msgs::PointCloud2 cloud = mappoint_to_pointcloud_world(map_points, msg_time);
     
     all_mappoints_pub.publish(cloud);
 }
@@ -312,7 +488,7 @@ sensor_msgs::PointCloud2 keypoints_to_pointcloud(std::vector<cv::KeyPoint>& keyp
 
 }
 
-sensor_msgs::PointCloud2 mappoint_to_pointcloud(std::vector<ORB_SLAM3::MapPoint*> map_points, ros::Time msg_time)
+sensor_msgs::PointCloud2 mappoint_to_pointcloud_world(std::vector<ORB_SLAM3::MapPoint*> map_points, ros::Time msg_time)
 {
     const int num_channels = 3; // x y z
 
@@ -365,6 +541,75 @@ sensor_msgs::PointCloud2 mappoint_to_pointcloud(std::vector<ORB_SLAM3::MapPoint*
             memcpy(cloud_data_ptr+(i*cloud.point_step), data_array, num_channels*sizeof(float));
         }
     }
+    return cloud;
+}
+
+sensor_msgs::PointCloud2 mappoint_to_pointcloud(
+    std::vector<ORB_SLAM3::MapPoint*> map_points, 
+    ros::Time msg_time,
+    const Sophus::SE3f& Tcw, 
+    const std::string& camera_frame_id)
+{
+    const int num_channels = 3; // x y z
+    std::vector<Eigen::Vector3f> points_in_camera_frame; // Вектор для хранения точек в кадре камеры
+    points_in_camera_frame.reserve(map_points.size());
+
+    // Сначала преобразуем все валидные точки
+    for (const auto& mp : map_points)
+    {
+        if (mp && !mp->isBad()) // Добавим проверку isBad() для надежности
+        {
+            Eigen::Vector3f P3Dw = mp->GetWorldPos(); // Используем float, т.к. Tcw - SE3f
+            Eigen::Vector3f P3Dc = Tcw * P3Dw; // Преобразуем в кадр камеры
+            points_in_camera_frame.push_back(P3Dc);
+        }
+    }
+
+    if (points_in_camera_frame.empty())
+    {
+         sensor_msgs::PointCloud2 cloud;
+         cloud.header.stamp = msg_time;
+         cloud.header.frame_id = camera_frame_id; 
+         cloud.height = 1;
+         cloud.width = 0;
+         cloud.point_step = num_channels * sizeof(float);
+         cloud.row_step = 0;
+         return cloud;
+    }
+
+    sensor_msgs::PointCloud2 cloud;
+    cloud.header.stamp = msg_time;
+    cloud.header.frame_id = camera_frame_id; 
+    cloud.height = 1;
+    cloud.width = points_in_camera_frame.size(); 
+    cloud.is_bigendian = false;
+    cloud.is_dense = true; 
+    cloud.point_step = num_channels * sizeof(float);
+    cloud.row_step = cloud.point_step * cloud.width;
+    cloud.fields.resize(num_channels);
+
+    std::string channel_id[] = { "x", "y", "z"};
+    for (int i = 0; i < num_channels; i++)
+    {
+        cloud.fields[i].name = channel_id[i];
+        cloud.fields[i].offset = i * sizeof(float);
+        cloud.fields[i].count = 1;
+        cloud.fields[i].datatype = sensor_msgs::PointField::FLOAT32;
+    }
+
+    cloud.data.resize(cloud.row_step * cloud.height);
+    unsigned char *cloud_data_ptr = &(cloud.data[0]);
+
+    for (unsigned int i = 0; i < cloud.width; i++)
+    {
+        float data_array[num_channels] = {
+            points_in_camera_frame[i].x(), 
+            points_in_camera_frame[i].y(), 
+            points_in_camera_frame[i].z() 
+        };
+        memcpy(cloud_data_ptr + (i * cloud.point_step), data_array, num_channels * sizeof(float));
+    }
+
     return cloud;
 }
 

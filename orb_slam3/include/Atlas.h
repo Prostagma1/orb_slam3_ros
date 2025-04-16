@@ -31,6 +31,9 @@
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/export.hpp>
 
+#include <pcl/point_cloud.h> 
+#include <pcl/point_types.h>
+
 
 namespace ORB_SLAM3
 {
@@ -82,7 +85,7 @@ public:
     unsigned long int GetLastInitKFid();
 
     void SetViewer(Viewer* pViewer);
-
+    pcl::PointCloud<pcl::PointXYZ>::Ptr GetCurrentMapPointsSafeAsPCL();
     // Method for change components in the current map
     void AddKeyFrame(KeyFrame* pKF);
     void AddMapPoint(MapPoint* pMP);
