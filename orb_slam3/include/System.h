@@ -40,8 +40,6 @@
 #include "ImuTypes.h"
 #include "Settings.h"
 
-#include <pcl/point_cloud.h> // Добавьте PCL includes здесь или в PCH
-#include <pcl/point_types.h>
 namespace ORB_SLAM3
 {
 
@@ -110,7 +108,7 @@ public:
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
     // Returns the camera pose (empty if tracking fails).
     Sophus::SE3f TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
-    pcl::PointCloud<pcl::PointXYZ>::Ptr GetAllMapPointsAsPCL(); // Ваша функция
+    bool SaveMapAsPly(const std::string& filename);
 
     // Process the given rgbd frame. Depthmap must be registered to the RGB frame.
     // Input image: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.

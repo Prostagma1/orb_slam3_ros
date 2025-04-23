@@ -17,17 +17,6 @@
 
         <param name="save_map_path" type="string" value="/home/prostagma/orb_maps"/> <!-- Папка для сохранения -->
 
-        <param name="save_map_filter/enable" type="bool" value="false"/>         <!-- Включить/выключить фильтрацию -->
-        <!-- <param name="save_map_filter/type" type="string" value="sor"/>  -->
-        <param name="save_map_filter/type" type="string" value="ror"/>
-
-        <!-- Настройки для фильтра Statistical Outlier Removal (SOR) -->
-        <param name="save_map_filter/sor/mean_k" type="int" value="30"/>
-        <param name="save_map_filter/sor/stddev_thresh" type="double" value="1.0"/>
-
-        <!-- Настройки для фильтра Radius Outlier Removal (ROR) -->
-        <param name="save_map_filter/ror/radius_search" type="double" value="0.5"/> 
-        <param name="save_map_filter/ror/min_neighbors" type="int" value="3"/>      
     </node>
     
     <!-- Visualization orb_slam3_with_imu -->

@@ -28,8 +28,6 @@
 #include <mutex>
 
 #include <boost/serialization/base_object.hpp>
-#include <pcl/point_cloud.h> 
-#include <pcl/point_types.h> 
 
 namespace ORB_SLAM3
 {
@@ -90,7 +88,7 @@ public:
     long unsigned  KeyFramesInMap();
 
     long unsigned int GetId();
-    pcl::PointCloud<pcl::PointXYZ>::Ptr GetAllMapPointsSafeAsPCL();
+    bool SaveAllMapPointsAsPly(const std::string& filename);
     long unsigned int GetInitKFid();
     void SetInitKFid(long unsigned int initKFif);
     long unsigned int GetMaxKFid();

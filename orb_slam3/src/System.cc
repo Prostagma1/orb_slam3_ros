@@ -35,45 +35,34 @@
 
 #include "Atlas.h"
 #include "MapPoint.h"
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <Eigen/Core> // Для Vector3f
+#include <Eigen/Core> 
+#include <iostream>
 
 namespace ORB_SLAM3
 {
 
 Verbose::eLevel Verbose::th = Verbose::VERBOSITY_NORMAL;
-pcl::PointCloud<pcl::PointXYZ>::Ptr System::GetAllMapPointsAsPCL()
+bool System::SaveMapAsPly(const std::string& filename)
 {
-    // Создаем указатель на облако (по умолчанию пустое)
-    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
-
     // Проверяем, инициализирован ли Атлас
     if (!mpAtlas) {
-         std::cerr << "System::GetAllMapPointsAsPCL: Atlas is not initialized."<< std::endl;
-         return cloud; // Возвращаем пустое облако
+         std::cerr << "System::SaveMapAsPly: Atlas is not initialized."<< std::endl;
+         return false; 
     }
 
-    // Опционально: Логирование перед вызовом
-    // std::cout << "System::GetAllMapPointsAsPCL: Calling Atlas::GetCurrentMapPointsSafeAsPCL()..." << std::endl;
+    std::cout << "System::SaveMapAsPly: Calling Atlas::SaveCurrentMapPointsAsPly()..." << std::endl;
 
-    // Вызываем новый, безопасный метод Атласа
-    // Он вернет либо облако с точками, либо пустое облако, если карты нет
-    cloud = mpAtlas->GetCurrentMapPointsSafeAsPCL();
+    // Вызываем метод сохранения Атласа
+    bool success = mpAtlas->SaveCurrentMapPointsAsPly(filename);
 
-    // Проверка на случай, если Атлас вернул nullptr (хотя не должен по новой реализации)
-    if(!cloud) {
-         std::cerr << "System::GetAllMapPointsAsPCL: Warning - Received null cloud from Atlas. Returning empty cloud." << std::endl;
-         cloud.reset(new pcl::PointCloud<pcl::PointXYZ>); // Создаем пустое облако, чтобы не вернуть nullptr
+    if (success) {
+        std::cout << "System::SaveMapAsPly: Map saving initiated successfully." << std::endl;
     } else {
-        // Опционально: Логирование после вызова
-        // std::cout << "System::GetAllMapPointsAsPCL: Received cloud with " << cloud->size() << " points." << std::endl;
+        std::cerr << "System::SaveMapAsPly: Failed to initiate map saving via Atlas." << std::endl;
     }
 
-    // Возвращаем полученное облако (может быть пустым)
-    return cloud;
+    return success;
 }
-
 System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor,
                const bool bUseViewer, const int initFr, const string &strSequence):
     mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false), mbResetActiveMap(false),

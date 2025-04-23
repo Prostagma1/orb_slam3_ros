@@ -20,8 +20,8 @@
 #include "Map.h"
 
 #include<mutex>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
+#include <iostream> 
+#include <Eigen/Core>
 
 namespace ORB_SLAM3
 {
@@ -133,39 +133,92 @@ void Map::SetReferenceMapPoints(const vector<MapPoint *> &vpMPs)
     unique_lock<mutex> lock(mMutexMap);
     mvpReferenceMapPoints = vpMPs;
 }
-pcl::PointCloud<pcl::PointXYZ>::Ptr Map::GetAllMapPointsSafeAsPCL()
+
+bool Map::SaveAllMapPointsAsPly(const std::string& filename)
 {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    // Временный контейнер для хранения валидных точек перед записью
+    std::vector<Eigen::Vector3f> valid_points;
 
-    // Блокируем мьютекс карты на время доступа к mspMapPoints и данным MapPoint
-    std::unique_lock<std::mutex> lock(mMutexMap);
-
-    cloud->reserve(mspMapPoints.size()); // Резервируем память
-    int valid_points_count = 0;
-
-    // Итерируем по точкам и копируем их координаты ПОД ЗАМКОМ mMutexMap
-    for (MapPoint* pMP : mspMapPoints) // Прямой доступ к сету под локом
+    // --- Блок для блокировки мьютекса карты ---
     {
-        if (pMP && !pMP->isBad()) // Безопасный доступ к состоянию точки
-        {
-            Eigen::Vector3f worldPos = pMP->GetWorldPos(); // Безопасный доступ к позиции
+        std::unique_lock<std::mutex> lock(mMutexMap);
 
-            pcl::PointXYZ point;
-            point.x = worldPos.x();
-            point.y = worldPos.y();
-            point.z = worldPos.z();
-            cloud->push_back(point); // Добавляем точку в облако
-            valid_points_count++;
+        // Оценочное резервирование памяти для вектора
+        valid_points.reserve(mspMapPoints.size());
+
+        // Итерируем по точкам и собираем их координаты 
+        for (MapPoint* pMP : mspMapPoints)
+        {
+            // Проверяем, что указатель валиден и точка не помечена как плохая
+            if (pMP && !pMP->isBad())
+            {
+                // Получаем позицию 
+                Eigen::Vector3f worldPos = pMP->GetWorldPos();
+                valid_points.push_back(worldPos); // Добавляем валидную точку
+            }
         }
+    } // --- Мьютекс карты mMutexMap разблокируется ---
+
+    // Если нет валидных точек
+    if (valid_points.empty()) {
+        std::cerr << "Map::SaveAllMapPointsAsPly: No valid map points found to save." << std::endl;
+        // std::ofstream outFile(filename);
+        // if (!outFile.is_open()) return false;
+        // outFile << "ply\n";
+        // outFile << "format ascii 1.0\n";
+        // outFile << "comment Empty map\n";
+        // outFile << "element vertex 0\n";
+        // outFile << "property float x\n";
+        // outFile << "property float y\n";
+        // outFile << "property float z\n";
+        // outFile << "end_header\n";
+        // return outFile.good(); // Проверить успешность записи заголовка
+        return false; 
     }
 
-    // Устанавливаем метаданные облака
-    cloud->width = cloud->points.size();
-    cloud->height = 1;
-    cloud->is_dense = true; // Предполагаем, что нет NaN/Inf, так как isBad() отсеивает
 
-    return cloud;
+    // Открываем файл для записи
+    std::ofstream outFile(filename);
+    if (!outFile.is_open()) {
+        std::cerr << "Error: Could not open file " << filename << " for writing!" << std::endl;
+        return false;
+    }
+
+    // --- Запись заголовка ASCII PLY ---
+    outFile << "ply\n";
+    outFile << "format ascii 1.0\n";
+    outFile << "element vertex " << valid_points.size() << "\n"; // Количество точек
+    outFile << "property float x\n";
+    outFile << "property float y\n";
+    outFile << "property float z\n";
+    outFile << "end_header\n";
+
+    // Проверяем, не произошла ли ошибка при записи заголовка
+     if (!outFile) {
+        std::cerr << "Error writing PLY header to " << filename << std::endl;
+        outFile.close(); // Закрываем файл перед выходом
+        return false;
+    }
+
+
+    // --- Запись данных точек ---
+    outFile << std::fixed << std::setprecision(6); // 6 знаков после запятой
+
+    for (const auto& p : valid_points) {
+        outFile << p.x() << " " << p.y() << " " << p.z() << "\n";
+    }
+
+    // Проверяем финальное состояние потока после записи всех данных
+    if (!outFile) {
+        std::cerr << "Error writing point data to " << filename << std::endl;
+         outFile.close(); // Закрываем файл
+        return false;
+    }
+
+    std::cout << "Successfully saved " << valid_points.size() << " map points to " << filename << std::endl;
+    return true; // Успешное завершение
 }
+
 void Map::InformNewBigChange()
 {
     unique_lock<mutex> lock(mMutexMap);

@@ -57,8 +57,6 @@ find_package(catkin REQUIRED COMPONENTS
   tf
   tf2
   message_generation
-   pcl_ros       # <-- Добавить
-  pcl_conversions # <-- Добавить
 )
 
 find_package(Eigen3 3.1.0 REQUIRED)
@@ -93,7 +91,6 @@ include_directories(
   ${EIGEN3_INCLUDE_DIR}
   ${Pangolin_INCLUDE_DIRS}
   ${catkin_INCLUDE_DIRS}
-    ${PCL_INCLUDE_DIRS}     # <-- Добавить
 )
 
 include(${PROJECT_SOURCE_DIR}/orb_slam3/Thirdparty/DBoW2/CMakeLists.txt)
@@ -191,7 +188,6 @@ add_executable(ros_mono_inertial
 target_link_libraries(ros_mono_inertial 
   ${PROJECT_NAME}
   ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}     # <-- Добавить
 )
 
 ## ROS node

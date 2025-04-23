@@ -5,16 +5,9 @@
 */
 
 #include "common.h"
-#include <pcl_ros/point_cloud.h> // Для работы с PCL в ROS
-#include <pcl/point_types.h>
-#include <pcl/io/pcd_io.h>      // Для сохранения PCD
-#include <pcl_conversions/pcl_conversions.h> // Для конвертации
-#include <pcl/filters/statistical_outlier_removal.h> // Фильтр SOR
-#include <pcl/filters/radius_outlier_removal.h>     // <--- ДОБАВИТЬ Фильтр ROR
 #include "orb_slam3_ros/SaveMap.h" // Ваш сервис
 #include <ros/node_handle.h> // Для доступа к параметрам
 #include <string>            // Для работы со строками (путь, тип фильтра)
-// #include <filesystem>        // Для создания директории (требует C++17)
 #include <boost/filesystem.hpp> 
 #include <algorithm>         // Для std::transform (преобразование строки в нижний регистр)
 
@@ -38,180 +31,73 @@ bool save_map_srv(orb_slam3_ros::SaveMap::Request &req, orb_slam3_ros::SaveMap::
     if (!pSLAM) {
         ROS_ERROR("SaveMap Service: SLAM system is not initialized!");
         res.success = false;
-        return false;
+        return false; 
     }
 
     if (req.name.empty()) {
-        ROS_ERROR("SaveMap Service: Map name cannot be empty!");
+        ROS_ERROR("SaveMap Service: Map name (base filename) cannot be empty!");
         res.success = false;
         return false;
     }
 
-    ROS_INFO("SaveMap Service: Received request to save map components with base name '%s'", req.name.c_str());
+    ROS_INFO("SaveMap Service: Received request to save map with base name '%s'", req.name.c_str());
 
-    // Получаем NodeHandle для доступа к параметрам (используем приватный)
     ros::NodeHandle nh("~");
 
-    // --- Параметры из launch файла ---
-    std::string save_path = ".";
-    bool enable_filter = true;
-    std::string filter_type_str = "sor"; // Тип фильтра по умолчанию ("sor", "ror", "none")
-
-    // Параметры SOR
-    int sor_mean_k = 50;
-    double sor_stddev_mul_thresh = 1.0;
-
-    // Параметры ROR
-    double ror_radius_search = 0.1; // Радиус поиска по умолчанию
-    int ror_min_neighbors = 5;     // Мин. соседей в радиусе по умолчанию
-
+    // --- Параметр пути для сохранения ---
+    std::string save_path = "."; // По умолчанию сохраняем в текущую директорию
     nh.param<std::string>("save_map_path", save_path, ".");
-    nh.param<bool>("save_map_filter/enable", enable_filter, true);
-    nh.param<std::string>("save_map_filter/type", filter_type_str, "sor");
+    ROS_INFO("Save map path parameter: '%s'", save_path.c_str());
 
-    // Преобразуем тип фильтра в нижний регистр для сравнения без учета регистра
-    std::transform(filter_type_str.begin(), filter_type_str.end(), filter_type_str.begin(), ::tolower);
-
-    // Читаем параметры конкретного фильтра только если он выбран
-    if (enable_filter) {
-        if (filter_type_str == "sor") {
-            nh.param<int>("save_map_filter/sor/mean_k", sor_mean_k, 50);
-            nh.param<double>("save_map_filter/sor/stddev_thresh", sor_stddev_mul_thresh, 1.0);
-            ROS_INFO("Save map filter type: SOR (MeanK=%d, StddevThresh=%.2f)", sor_mean_k, sor_stddev_mul_thresh);
-        } else if (filter_type_str == "ror") {
-            nh.param<double>("save_map_filter/ror/radius_search", ror_radius_search, 0.1);
-            nh.param<int>("save_map_filter/ror/min_neighbors", ror_min_neighbors, 5);
-            ROS_INFO("Save map filter type: ROR (Radius=%.3f, MinNeighbors=%d)", ror_radius_search, ror_min_neighbors);
-        } else if (filter_type_str == "none") {
-             ROS_INFO("Save map filter type: None (filtering disabled by type parameter)");
-             enable_filter = false; // Отключаем фильтрацию если явно указано "none"
-        } else {
-            ROS_WARN("Unknown filter type '%s' specified. Disabling filtering.", filter_type_str.c_str());
-            enable_filter = false; // Отключаем фильтрацию при неизвестном типе
-        }
-    } else {
-        ROS_INFO("Save map filtering is disabled by enable parameter.");
-    }
-    ROS_INFO("Save map path: '%s'", save_path.c_str());
-
-
-    // Создаем директорию для сохранения
     try {
          if (!save_path.empty() && save_path != ".") {
-              boost::filesystem::create_directories(save_path); // Boost
+              if (boost::filesystem::create_directories(save_path)) {
+                   ROS_INFO("Created save directory: %s", save_path.c_str());
+              }
          }
     } catch (const std::exception& e) {
          ROS_ERROR("Failed to create save directory '%s': %s", save_path.c_str(), e.what());
          save_path = ".";
-         ROS_WARN("Falling back to saving in the current directory.");
+         ROS_WARN("Falling back to saving in the current directory ('%s').", save_path.c_str());
     }
 
 
-    // --- 1. Получение "сырого" облака точек ---
-    ROS_INFO("Retrieving map points as PCL cloud...");
-    pcl::PointCloud<pcl::PointXYZ>::Ptr map_cloud_raw;
+    // --- 1. Формирование имени файла ---
+    // Убираем расширение, если оно было в имени запроса
+    std::string base_name = req.name;
+    size_t last_dot = base_name.find_last_of(".");
+    if (last_dot != std::string::npos) {
+        base_name = base_name.substr(0, last_dot);
+        ROS_WARN("Provided name '%s' contained an extension. Using base name '%s'.",
+                 req.name.c_str(), base_name.c_str());
+    }
+    // Добавляем расширение .ply
+    std::string ply_filename = save_path + "/" + base_name + ".ply";
+
+
+    // --- 2. Вызов функции сохранения в PLY ---
+    ROS_INFO("Attempting to save map point cloud to: %s", ply_filename.c_str());
+    bool save_success = false;
     try {
-         map_cloud_raw = pSLAM->GetAllMapPointsAsPCL();
+        save_success = pSLAM->SaveMapAsPly(ply_filename);
+
     } catch (const std::exception& e) {
-        ROS_ERROR("Exception while calling GetAllMapPointsAsPCL: %s", e.what());
-        map_cloud_raw = nullptr;
-    }
-
-    if (!map_cloud_raw || map_cloud_raw->empty()) {
-        ROS_ERROR("Map point cloud is empty or could not be retrieved. Cannot save map.");
-        res.success = false;
-        return false;
-    }
-    ROS_INFO("Successfully retrieved %ld raw map points.", map_cloud_raw->size());
-
-
-    // --- 2. Сохранение "сырого" облака ---
-    std::string pcd_filename_raw = save_path + "/" + req.name + "_raw.pcd";
-    bool raw_saved = false;
-    ROS_INFO("Saving raw map point cloud to %s", pcd_filename_raw.c_str());
-    try {
-        if (pcl::io::savePCDFileBinary(pcd_filename_raw, *map_cloud_raw) == 0) {
-            ROS_INFO("Raw map point cloud successfully saved.", pcd_filename_raw.c_str());
-            raw_saved = true;
-        } else {
-            ROS_ERROR("Failed to save raw map point cloud.", pcd_filename_raw.c_str());
-        }
-    } catch (const std::exception& e) {
-        ROS_ERROR("Exception while saving raw PCD file %s: %s", pcd_filename_raw.c_str(), e.what());
+        ROS_ERROR("Exception occurred during map saving process (calling SaveMapAsPly): %s", e.what());
+        save_success = false;
     } catch (...) {
-        ROS_ERROR("Unknown exception while saving raw PCD file %s", pcd_filename_raw.c_str());
+        ROS_ERROR("An unknown exception occurred during map saving process (calling SaveMapAsPly).");
+        save_success = false;
     }
 
 
-    // --- 3. Фильтрация и Сохранение отфильтрованного облака ---
-    pcl::PointCloud<pcl::PointXYZ>::Ptr map_cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
-    bool filtered_saved = false; // Флаг успеха сохранения отфильтрованного облака
-
-    if (enable_filter) {
-        ROS_INFO("Applying filter '%s'...", filter_type_str.c_str());
-        pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud(new pcl::PointCloud<pcl::PointXYZ>()); // Временное облако для результата фильтрации
-
-        try {
-            if (filter_type_str == "sor") {
-                pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
-                sor.setInputCloud(map_cloud_raw);
-                sor.setMeanK(sor_mean_k);
-                sor.setStddevMulThresh(sor_stddev_mul_thresh);
-                sor.filter(*temp_cloud);
-            } else if (filter_type_str == "ror") {
-                pcl::RadiusOutlierRemoval<pcl::PointXYZ> ror;
-                ror.setInputCloud(map_cloud_raw);
-                ror.setRadiusSearch(ror_radius_search);
-                ror.setMinNeighborsInRadius(ror_min_neighbors);
-                ror.filter(*temp_cloud);
-            }
-            // Если нужно будет добавить другие фильтры, использовать else if
-
-            map_cloud_filtered = temp_cloud; // Переносим результат во внешнюю переменную
-            ROS_INFO("Filtering complete. Points before: %ld, Points after: %ld",
-                     map_cloud_raw->size(), map_cloud_filtered->size());
-
-            if (map_cloud_filtered->empty()) {
-                 ROS_WARN("Filtered point cloud is empty! Check filter parameters. Skipping save of filtered cloud.");
-            } else {
-                 // Сохраняем отфильтрованное облако
-                 std::string pcd_filename_filtered = save_path + "/" + req.name + "_" + filter_type_str + "_filtered.pcd"; // Добавляем тип фильтра в имя файла
-                 ROS_INFO("Saving filtered map point cloud to %s", pcd_filename_filtered.c_str());
-                 try {
-                     if (pcl::io::savePCDFileBinary(pcd_filename_filtered, *map_cloud_filtered) == 0) {
-                         ROS_INFO("Filtered map point cloud successfully saved.");
-                         filtered_saved = true;
-                     } else {
-                         ROS_ERROR("Failed to save filtered map point cloud.");
-                     }
-                 } catch (const std::exception& e) {
-                     ROS_ERROR("Exception while saving filtered PCD file %s: %s", pcd_filename_filtered.c_str(), e.what());
-                 } catch (...) {
-                     ROS_ERROR("Unknown exception while saving filtered PCD file %s", pcd_filename_filtered.c_str());
-                 }
-            }
-
-        } catch (const std::exception& e) {
-             ROS_ERROR("Exception during filtering process: %s", e.what());
-        } catch (...) {
-             ROS_ERROR("Unknown exception during filtering process.");
-        }
-    } else {
-        ROS_INFO("Filtering is disabled. Only raw point cloud will be saved.");
-        // filtered_saved остается false, так как фильтрация не проводилась
-    }
-
-
-    // --- 4. Определение общего результата ---
-    // Успех, если сырое облако сохранилось И (фильтрация была выключена ИЛИ (она была включена И успешно завершилась сохранением))
-    res.success = raw_saved && (!enable_filter || (enable_filter && filtered_saved));
+    // --- 3. Установка результата и логирование ---
+    res.success = save_success;
 
     if (res.success) {
-         ROS_INFO("SaveMap service finished successfully.");
+         ROS_INFO("SaveMap service finished successfully. Map saved to %s", ply_filename.c_str());
     } else {
-         ROS_ERROR("SaveMap service finished with errors.");
+         ROS_ERROR("SaveMap service failed to save map to %s.", ply_filename.c_str());
     }
-
     return res.success;
 }
 
